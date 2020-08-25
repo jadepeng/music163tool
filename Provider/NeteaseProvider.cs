@@ -1,0 +1,257 @@
+﻿using Json;
+using Newtonsoft.Json.Linq;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using XMusicDownloader.Domain;
+using System.Security.Cryptography;
+using System.Text.RegularExpressions;
+
+namespace XMusicDownloader.Provider
+{
+    public class NeteaseProvider : IMusicProvider
+    {
+        static HttpConfig DEFAULT_CONFIG = new HttpConfig
+        {
+            Referer = "http://music.163.com/",
+
+        };
+
+        public string Name { get; } = "网易";
+
+
+
+        public List<Song> SearchSongs(string keyword, int page, int pageSize)
+        {
+
+            var searchResult = HttpHelper.GET(string.Format("http://music.163.com/api/cloudsearch/pc?s={0}&type=1&offset={1}&limit={2}", keyword, (page - 1) * pageSize, pageSize), DEFAULT_CONFIG);
+            var result = new List<Song>();
+            try
+            {
+
+                var songList = JObject.Parse(searchResult)["result"]["songs"];
+                var index = 1;
+
+                foreach (var songItem in songList)
+                {
+
+                    if ((int)songItem["privilege"]["fl"] == 0)
+                    {
+                        // 无版权
+                        continue;
+                    }
+
+                    Song song = extractSong(ref index, songItem);
+                    result.Add(song);
+                }
+            }
+            catch (Exception ex)
+            {
+
+            }
+            return result;
+
+        }
+
+        // https://music.163.com/#/artist?id=10559
+
+        public bool Support(string url)
+        {
+            if (url == null)
+            {
+                return false;
+            }
+
+            if (!regex.IsMatch(url))
+            {
+                return false;
+            }
+
+            return url.StartsWith("https://music.163.com/#/playlist?id=") || url.StartsWith("https://music.163.com/#/album?id=") || url.StartsWith("https://music.163.com/#/artist?id=");
+        }
+
+        Regex regex = new Regex("id=(\\d+)");
+
+        public List<Song> GetSongList(string url)
+        {
+            var isSongList = url.StartsWith("https://music.163.com/#/playlist?id=");
+
+            var id = regex.Match(url).Groups[1].Value;
+
+            var result = new List<Song>();
+
+            if (isSongList)
+            {
+                GetSongListDetail(id, result);
+            }
+            else if(url.StartsWith("https://music.163.com/#/album?id="))
+            {
+                GetAlbum(id, result);
+            }
+            else
+            {
+                GetSinger(id, result);
+            }
+
+
+            return result;
+
+        }
+
+        private void GetSinger(string id, List<Song> result)
+        {
+            var requestUrl = "https://v1.itooi.cn/netease/song/artist?id=" + id + "&pageSize=200";
+            var searchResult = HttpHelper.GET(requestUrl, DEFAULT_CONFIG);
+
+            var songList = JObject.Parse(searchResult)["data"];
+            var index = 1;
+
+            foreach (var songItem in songList)
+            {
+                Song song = extractSong(ref index, songItem);
+                result.Add(song);
+
+            }
+        }
+
+        private void GetAlbum(string id, List<Song> result)
+        {
+            var requestUrl = "https://v1.itooi.cn/netease/album?id=" + id;
+            var searchResult = HttpHelper.GET(requestUrl, DEFAULT_CONFIG);
+
+            var songList = JObject.Parse(searchResult)["data"]["songs"];
+            var index = 1;
+
+            foreach (var songItem in songList)
+            {
+                Song song = extractSong(ref index, songItem);
+                result.Add(song);
+
+            }
+        }
+
+        public static Song extractSong(ref int index, JToken songItem)
+        {
+            var song = new Song
+            {
+                id = (string)songItem["id"],
+                name = (string)songItem["name"],
+
+                album = (string)songItem["al"]["name"],
+                //rate = 128,
+                index = index++,
+                //size = (double)songItem["FileSize"],
+                source = "网易",
+                duration = (double)songItem["dt"] / 1000
+            };
+
+            song.singer = "";
+            foreach (var ar in songItem["ar"])
+            {
+                song.singer += ar["name"] + " ";
+            }
+
+            if (songItem.Contains("privilege") && songItem["privilege"].HasValues)
+            {
+                song.rate = ((int)songItem["privilege"]["fl"]) / 1000;
+                var fl = (int)songItem["privilege"]["fl"];
+                if (songItem["h"] != null && fl >= 320000)
+                {
+                    song.size = (double)songItem["h"]["size"];
+                }
+                else if (songItem["m"] != null && fl >= 192000)
+                {
+                    song.size = (double)songItem["m"]["size"];
+                }
+                else if (songItem["l"] != null)
+                {
+                    song.size = (double)songItem["l"]["size"];
+                }
+            }
+            else
+            {
+                song.rate = 128;
+                song.size = 0;
+            }
+
+            return song;
+        }
+
+        private void GetSongListDetail(string id, List<Song> result)
+        {
+            var requestUrl = "https://v1.itooi.cn/netease/songList?id=" + id;
+            var searchResult = HttpHelper.GET(requestUrl, DEFAULT_CONFIG);
+
+            var songList = JObject.Parse(searchResult)["data"]["tracks"];
+            var index = 1;
+
+            foreach (var songItem in songList)
+            {
+                var song = new Song
+                {
+                    id = (string)songItem["id"],
+                    name = (string)songItem["name"],
+                    album = (string)songItem["album"]["name"],
+                    //rate = 128,
+                    index = index++,
+                    //size = (double)songItem["FileSize"],
+                    source = Name,
+                    duration = (double)songItem["duration"] / 1000
+                };
+                song.singer = "";
+                foreach (var ar in songItem["artists"])
+                {
+                    song.singer += ar["name"] + " ";
+                }
+
+
+                if (songItem["hMusic"] != null)
+                {
+                    song.size = (double)songItem["hMusic"]["size"];
+                    song.rate = (int)songItem["hMusic"]["bitrate"];
+                }
+                else if (songItem["mMusic"] != null)
+                {
+                    song.size = (double)songItem["mMusic"]["size"];
+                    song.rate = (int)songItem["mMusic"]["bitrate"];
+                }
+                else if (songItem["lMusic"] != null)
+                {
+                    song.size = (double)songItem["lMusic"]["size"];
+                    song.rate = (int)songItem["lMusic"]["bitrate"];
+                }
+                result.Add(song);
+
+            }
+        }
+
+        public string getDownloadUrl(string id, string rate)
+        {
+            return HttpHelper.DetectLocationUrl("https://v1.itooi.cn/netease/url?id=" + id + "&quality=" + rate,DEFAULT_CONFIG);
+        }
+
+        public string getDownloadUrl(Song song)
+        {
+
+            var param = new JObject();
+            //param["method"] = "POST";
+            //param["url"] = "http://music.163.com/api/song/enhance/player/url";
+            //var param_params = new JObject();
+            //param_params["ids"] = new JArray(new string[] { song.id });
+            //param_params["br"] = 320000;
+            //param["params"] = param_params;
+
+            //var param_json = param.ToString();
+
+            var urlInfO = JsonParser.Deserialize(HttpHelper.GET(string.Format(" http://music.163.com/api/song/enhance/player/url?id={0}&ids=%5B{0}%5D&br=3200000", song.id), DEFAULT_CONFIG));
+            return urlInfO.data[0]["url"];
+
+        }
+
+
+
+    }
+
+}
